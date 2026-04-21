@@ -68,16 +68,8 @@ MODELS: dict[str, dict[str, str]] = {
         "repo": "Systran/faster-whisper-large-v3",
         "backend": "whisper",
     },
-    "whisper-medium": {
-        "repo": "Systran/faster-whisper-medium",
-        "backend": "whisper",
-    },
-    "sensevoice-small": {
-        "repo": "FunAudioLLM/SenseVoiceSmall",
-        "backend": "funasr",
-    },
     "paraformer-zh": {
-        "repo": "funasr/paraformer-zh",
+        "repo": "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
         "backend": "funasr",
     },
 }
@@ -128,7 +120,7 @@ class WhisperFasterBackend:
 
 
 class FunASRBackend:
-    """FunASR backend (SenseVoice / Paraformer), CUDA."""
+    """FunASR backend (SeACo-Paraformer), CUDA."""
 
     name = "funasr"
 
@@ -148,6 +140,10 @@ class FunASRBackend:
         kwargs = {"input": audio_path}
         if language:
             kwargs["language"] = language
+        # For SeACo / Contextual Paraformer, `prompt` is repurposed as a hotword
+        # string (space-separated). The base paraformer-zh model ignores it.
+        if prompt:
+            kwargs["hotword"] = prompt
         results = self.model.generate(**kwargs)
         if not results:
             return
@@ -205,14 +201,26 @@ def detect_device(requested: str = "auto") -> str:
     raise RuntimeError(f"Unsupported platform: {system}")
 
 
-def print_download_hint(model_name: str, repo_id: str, model_path: Path) -> None:
+def print_download_hint(
+    model_name: str, repo_id: str, model_path: Path, backend_type: str
+) -> None:
     bar = "=" * 64
     print(bar, file=sys.stderr)
     print(f"Model `{model_name}` not found at: {model_path}", file=sys.stderr)
     print("", file=sys.stderr)
-    print("Download it first with hfd (HuggingFace CLI download accelerator):", file=sys.stderr)
-    print("", file=sys.stderr)
-    print(f"    hfd {repo_id} --local-dir {model_path}", file=sys.stderr)
+    # FunASR models live on ModelScope (repo ids like `iic/...`); Whisper
+    # CTranslate2 weights live on HuggingFace.
+    if backend_type == "funasr":
+        print("Download it first with modelscope (bundled with funasr):", file=sys.stderr)
+        print("", file=sys.stderr)
+        print(
+            f"    uv run modelscope download --model {repo_id} --local_dir {model_path}",
+            file=sys.stderr,
+        )
+    else:
+        print("Download it first with hfd (HuggingFace CLI download accelerator):", file=sys.stderr)
+        print("", file=sys.stderr)
+        print(f"    hfd {repo_id} --local-dir {model_path}", file=sys.stderr)
     print("", file=sys.stderr)
     print("Then restart this service.", file=sys.stderr)
     print(bar, file=sys.stderr)
@@ -259,7 +267,7 @@ def create_backend(
     model_path = models_dir / model_name
 
     if not model_path.exists() or not any(model_path.iterdir()):
-        print_download_hint(model_name, repo_id, model_path)
+        print_download_hint(model_name, repo_id, model_path, backend_type)
         sys.exit(1)
 
     if device == "cuda":
@@ -433,7 +441,7 @@ async def transcriptions(
 
 def main():
     parser = argparse.ArgumentParser(description="OpenAI-compatible STT server")
-    parser.add_argument("--model", help="Model alias, e.g. whisper-large-v3-turbo / sensevoice-small")
+    parser.add_argument("--model", help="Model alias, e.g. whisper-large-v3-turbo / paraformer-zh")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(

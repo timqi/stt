@@ -53,16 +53,18 @@ Never silently fall back to CPU. Inference on CPU is too slow to be useful and h
 `MODELS` dict at the top of `server.py`. Each entry:
 
 ```python
-"alias": {"repo": "org/repo-on-hf", "backend": "whisper" | "funasr"}
+"alias": {"repo": "org/repo-id", "backend": "whisper" | "funasr"}
 ```
 
-Whisper entries must point at **CTranslate2-converted** repos (e.g. `Systran/faster-whisper-*`, `mobiuslabsgmbh/faster-whisper-*`), not raw `openai/whisper-*` — faster-whisper can't load the raw PyTorch weights directly.
+Repo sources split by backend:
+- `whisper` → HuggingFace. Must be **CTranslate2-converted** (e.g. `Systran/faster-whisper-*`, `mobiuslabsgmbh/faster-whisper-*`), not raw `openai/whisper-*` — faster-whisper can't load the raw PyTorch weights directly.
+- `funasr` → ModelScope (`iic/...`). FunASR only publishes complete weights there; HF mirrors under `funasr/` exist but are empty placeholders.
 
 ## Model storage
 
-Convention: `~/models/stt/<alias>/` — one directory per model, contents are whatever `hfd` fetched.
+Convention: `~/models/stt/<alias>/` — one directory per model, contents are whatever the downloader fetched.
 
-When a model is missing, `create_backend()` prints the `hfd` command to stderr and `sys.exit(1)`. **Do not add auto-download.** The user wants downloads to be an explicit manual step. If you change this rule, get the user's sign-off first.
+When a model is missing, `create_backend()` prints the download command to stderr and `sys.exit(1)`. The command differs by backend: `hfd <repo> --local-dir <path>` for Whisper, `uv run modelscope download --model <repo> --local_dir <path>` for FunASR (the `modelscope` CLI is a transitive dep of `funasr`, so no separate install is needed). **Do not add auto-download.** The user wants downloads to be an explicit manual step. If you change this rule, get the user's sign-off first.
 
 ## API surface
 
@@ -101,7 +103,7 @@ FunASR is not natively streaming; it yields one big chunk. That's fine, the API 
 
 - Mode B streaming: WebSocket endpoint for real-time input. The backend Protocol already accommodates this (it's streaming-first). When adding it, integrate `whisper-streaming` (LocalAgreement-2) for Whisper and `paraformer-zh-streaming` for FunASR.
 - MLX backends — replace the stubs with `mlx-whisper` and a FunASR bridge.
-- VAD integration for SenseVoice long audio.
+- VAD + punctuation pipeline for long-audio FunASR.
 
 ## Commands
 
