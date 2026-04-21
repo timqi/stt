@@ -2,9 +2,14 @@
 set -euo pipefail
 
 DEPLOY_DIR="$(pwd)"
-UV_BIN="$(which uv)"
 MODEL="${STT_MODEL:-whisper-large-v3-turbo}"
 PORT="${STT_PORT:-7200}"
+VENV_PY="$DEPLOY_DIR/.venv/bin/python"
+
+if [ ! -x "$VENV_PY" ]; then
+    echo "venv missing at $VENV_PY — run 'uv sync --extra cuda' first" >&2
+    exit 1
+fi
 
 sudo tee /etc/systemd/system/stt.service > /dev/null <<EOF
 [Unit]
@@ -18,7 +23,7 @@ User=$(whoami)
 WorkingDirectory=$DEPLOY_DIR
 Environment=HOME=$HOME
 Environment=PATH=$PATH
-ExecStart=$UV_BIN run python server.py --model $MODEL --port $PORT
+ExecStart=$VENV_PY server.py --model $MODEL --port $PORT
 LogNamespace=stt
 Restart=on-failure
 RestartSec=5
