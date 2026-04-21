@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import queue
+import re
 import sys
 import tempfile
 import threading
@@ -74,6 +75,12 @@ MODELS: dict[str, dict[str, str]] = {
     },
 }
 
+# Auxiliary models (punctuation, VAD, speaker, ...) shared across ASR backends.
+# Directory convention mirrors MODELS: `~/models/stt/<alias>/`.
+AUX_MODELS: dict[str, str] = {
+    "ct-punc": "iic/punc_ct-transformer_cn-en-common-vocab471067-large",
+}
+
 
 # ---------------------------------------------------------------------------
 # Backend protocol & implementations
@@ -119,22 +126,29 @@ class WhisperFasterBackend:
             yield Segment(start=seg.start, end=seg.end, text=seg.text)
 
 
+# Paraformer tokenises at character level, so raw output looks like
+# "你 好 世 界". Collapse spaces between two non-ASCII chars — covers CJK
+# ideographs, CJK punctuation (U+3000–303F), and full-width forms
+# (U+FF00–FFEF) emitted by ct-punc. ASCII words (English, digits) keep
+# their surrounding spaces.
+_CJK = r"[　-〿㐀-鿿＀-￯]"
+_CJK_SPACE = re.compile(rf"(?<={_CJK})\s+(?={_CJK})")
+
+
 class FunASRBackend:
-    """FunASR backend (SeACo-Paraformer), CUDA."""
+    """FunASR backend (SeACo-Paraformer + ct-punc), CUDA."""
 
     name = "funasr"
 
-    def __init__(self, model_path: str, device: str = "cuda"):
+    def __init__(self, model_path: str, punc_path: str, device: str = "cuda"):
         from funasr import AutoModel
 
-        self.model = AutoModel(model=model_path, device=device, disable_update=True)
-        # postprocess strips SenseVoice's <|zh|><|NEUTRAL|>... tokens
-        try:
-            from funasr.utils.postprocess_utils import rich_transcription_postprocess
-
-            self._postprocess = rich_transcription_postprocess
-        except ImportError:
-            self._postprocess = lambda x: x
+        self.model = AutoModel(
+            model=model_path,
+            punc_model=punc_path,
+            device=device,
+            disable_update=True,
+        )
 
     def transcribe_stream(self, audio_path, language=None, prompt=None, temperature=0.0):
         kwargs = {"input": audio_path}
@@ -147,7 +161,7 @@ class FunASRBackend:
         results = self.model.generate(**kwargs)
         if not results:
             return
-        text = self._postprocess(results[0].get("text", ""))
+        text = _CJK_SPACE.sub("", results[0].get("text", ""))
         yield Segment(start=0.0, end=0.0, text=text)
 
 
@@ -254,6 +268,10 @@ def _warmup(backend: STTBackend) -> None:
             pass
 
 
+def _missing(path: Path) -> bool:
+    return not path.exists() or not any(path.iterdir())
+
+
 def create_backend(
     model_name: str, models_dir: Path, device: str, compute_type: str
 ) -> STTBackend:
@@ -266,15 +284,23 @@ def create_backend(
     repo_id, backend_type = info["repo"], info["backend"]
     model_path = models_dir / model_name
 
-    if not model_path.exists() or not any(model_path.iterdir()):
-        print_download_hint(model_name, repo_id, model_path, backend_type)
+    # Collect required paths: main ASR + backend-specific aux models.
+    required = [(model_name, repo_id, model_path, backend_type)]
+    punc_path = models_dir / "ct-punc"
+    if backend_type == "funasr":
+        required.append(("ct-punc", AUX_MODELS["ct-punc"], punc_path, "funasr"))
+
+    missing = [r for r in required if _missing(r[2])]
+    if missing:
+        for name, repo, path, btype in missing:
+            print_download_hint(name, repo, path, btype)
         sys.exit(1)
 
     if device == "cuda":
         if backend_type == "whisper":
             return WhisperFasterBackend(str(model_path), device="cuda", compute_type=compute_type)
         if backend_type == "funasr":
-            return FunASRBackend(str(model_path), device="cuda")
+            return FunASRBackend(str(model_path), str(punc_path), device="cuda")
     elif device == "mlx":
         if backend_type == "whisper":
             return WhisperMLXBackend(str(model_path))
